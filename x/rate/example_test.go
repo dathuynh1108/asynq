@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/hibiken/asynq"
-	"github.com/hibiken/asynq/x/rate"
+	"github.com/dathuynh1108/asynq"
+	"github.com/dathuynh1108/asynq/x/rate"
 )
 
 type RateLimitError struct {
