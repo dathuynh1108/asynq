@@ -963,6 +963,12 @@ func parseOption(s string) (Option, error) {
 			return nil, err
 		}
 		return Retention(d), nil
+	case "Priority":
+		n, err := strconv.ParseInt(arg, 10, 0)
+		if err != nil {
+			return nil, err
+		}
+		return Priority(n), nil
 	default:
 		return nil, fmt.Errorf("cannot not parse option string %q", s)
 	}

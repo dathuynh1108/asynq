@@ -49,6 +49,7 @@ const (
 	TaskIDOpt
 	RetentionOpt
 	GroupOpt
+	PriorityOpt
 )
 
 // Option specifies the task processing behavior.
@@ -75,6 +76,7 @@ type (
 	processInOption time.Duration
 	retentionOption time.Duration
 	groupOption     string
+	priorityOption  int64
 )
 
 // MaxRetry returns an option to specify the max number of times
@@ -206,6 +208,14 @@ func (name groupOption) String() string     { return fmt.Sprintf("Group(%q)", st
 func (name groupOption) Type() OptionType   { return GroupOpt }
 func (name groupOption) Value() interface{} { return string(name) }
 
+func Priority(value int64) Option {
+	return priorityOption(value)
+}
+
+func (value priorityOption) String() string     { return fmt.Sprintf("Priority(%d)", int64(value)) }
+func (value priorityOption) Type() OptionType   { return PriorityOpt }
+func (value priorityOption) Value() interface{} { return int64(value) }
+
 // ErrDuplicateTask indicates that the given task could not be enqueued since it's a duplicate of another task.
 //
 // ErrDuplicateTask error only applies to tasks enqueued with a Unique option.
@@ -226,6 +236,7 @@ type option struct {
 	processAt time.Time
 	retention time.Duration
 	group     string
+	priority  int64
 }
 
 // composeOptions merges user provided options into the default options
@@ -240,6 +251,7 @@ func composeOptions(opts ...Option) (option, error) {
 		timeout:   0, // do not set to defaultTimeout here
 		deadline:  time.Time{},
 		processAt: time.Now(),
+		priority:  0,
 	}
 	for _, opt := range opts {
 		switch opt := opt.(type) {
@@ -279,6 +291,8 @@ func composeOptions(opts ...Option) (option, error) {
 				return option{}, errors.New("group key cannot be empty")
 			}
 			res.group = key
+		case priorityOption:
+			res.priority = int64(opt)
 		default:
 			// ignore unexpected option
 		}
@@ -378,6 +392,7 @@ func (c *Client) EnqueueContext(ctx context.Context, task *Task, opts ...Option)
 		UniqueKey: uniqueKey,
 		GroupKey:  opt.group,
 		Retention: int64(opt.retention.Seconds()),
+		Priority:  opt.priority,
 	}
 	now := time.Now()
 	var state base.TaskState
