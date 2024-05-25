@@ -224,12 +224,12 @@ func (r *RDB) EnqueueUnique(ctx context.Context, msg *base.TaskMessage, ttl time
 // calling ZPOPMIN to pop a task from the queue.
 var dequeueCmd = redis.NewScript(`
 if redis.call("EXISTS", KEYS[2]) == 0 then
-    local id = redis.call("ZPOPMIN", KEYS[1])
-    if id then
-        local key = ARGV[2] .. id[1]
+    local ids = redis.call("ZPOPMIN", KEYS[1])
+	for _, id in ipairs(ids) do
+        local key = ARGV[2] .. id
         redis.call("HSET", key, "state", "active")
         redis.call("HDEL", key, "pending_since")
-        redis.call("ZADD", KEYS[4], ARGV[1], id[1])
+        redis.call("ZADD", KEYS[4], ARGV[1], id)
         return redis.call("HGET", key, "msg")
     end
 end
