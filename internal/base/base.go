@@ -294,6 +294,8 @@ type TaskMessage struct {
 	//
 	// Use zero to indicate no value.
 	CompletedAt int64
+
+	Priority int64
 }
 
 // EncodeMessage marshals the given task message and returns an encoded bytes.

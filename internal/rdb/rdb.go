@@ -80,7 +80,7 @@ func (r *RDB) runScriptWithErrorCode(ctx context.Context, op errors.Op, script *
 	return n, nil
 }
 
-// enqueueCmd enqueues a given task message.
+// enqueueCmd enqueues a given task message with priority.
 //
 // Input:
 // KEYS[1] -> asynq:{<qname>}:t:<task_id>
@@ -89,19 +89,21 @@ func (r *RDB) runScriptWithErrorCode(ctx context.Context, op errors.Op, script *
 // ARGV[1] -> task message data
 // ARGV[2] -> task ID
 // ARGV[3] -> current unix time in nsec
+// ARGV[4] -> task priority
 //
 // Output:
 // Returns 1 if successfully enqueued
 // Returns 0 if task ID already exists
 var enqueueCmd = redis.NewScript(`
 if redis.call("EXISTS", KEYS[1]) == 1 then
-	return 0
+    return 0
 end
 redis.call("HSET", KEYS[1],
            "msg", ARGV[1],
            "state", "pending",
-           "pending_since", ARGV[3])
-redis.call("LPUSH", KEYS[2], ARGV[2])
+           "pending_since", ARGV[3],
+           "priority", ARGV[4])
+redis.call("ZADD", KEYS[2], ARGV[4], ARGV[2])
 return 1
 `)
 
@@ -123,6 +125,7 @@ func (r *RDB) Enqueue(ctx context.Context, msg *base.TaskMessage) error {
 		encoded,
 		msg.ID,
 		r.clock.Now().UnixNano(),
+		msg.Priority,
 	}
 	n, err := r.runScriptWithErrorCode(ctx, op, enqueueCmd, keys, argv...)
 	if err != nil {
@@ -134,7 +137,7 @@ func (r *RDB) Enqueue(ctx context.Context, msg *base.TaskMessage) error {
 	return nil
 }
 
-// enqueueUniqueCmd enqueues the task message if the task is unique.
+// enqueueUniqueCmd enqueues the task message if the task is unique with priority.
 //
 // KEYS[1] -> unique key
 // KEYS[2] -> asynq:{<qname>}:t:<taskid>
@@ -144,6 +147,7 @@ func (r *RDB) Enqueue(ctx context.Context, msg *base.TaskMessage) error {
 // ARGV[2] -> uniqueness lock TTL
 // ARGV[3] -> task message data
 // ARGV[4] -> current unix time in nsec
+// ARGV[5] -> task priority
 //
 // Output:
 // Returns 1 if successfully enqueued
@@ -161,8 +165,9 @@ redis.call("HSET", KEYS[2],
            "msg", ARGV[3],
            "state", "pending",
            "pending_since", ARGV[4],
-           "unique_key", KEYS[1])
-redis.call("LPUSH", KEYS[3], ARGV[1])
+           "unique_key", KEYS[1],
+           "priority", ARGV[5])
+redis.call("ZADD", KEYS[3], ARGV[5], ARGV[1])
 return 1
 `)
 
@@ -187,6 +192,7 @@ func (r *RDB) EnqueueUnique(ctx context.Context, msg *base.TaskMessage, ttl time
 		int(ttl.Seconds()),
 		encoded,
 		r.clock.Now().UnixNano(),
+		msg.Priority,
 	}
 	n, err := r.runScriptWithErrorCode(ctx, op, enqueueUniqueCmd, keys, argv...)
 	if err != nil {
@@ -215,17 +221,17 @@ func (r *RDB) EnqueueUnique(ctx context.Context, msg *base.TaskMessage, ttl time
 // Returns an encoded TaskMessage.
 //
 // Note: dequeueCmd checks whether a queue is paused first, before
-// calling RPOPLPUSH to pop a task from the queue.
+// calling ZPOPMIN to pop a task from the queue.
 var dequeueCmd = redis.NewScript(`
 if redis.call("EXISTS", KEYS[2]) == 0 then
-	local id = redis.call("RPOPLPUSH", KEYS[1], KEYS[3])
-	if id then
-		local key = ARGV[2] .. id
-		redis.call("HSET", key, "state", "active")
-		redis.call("HDEL", key, "pending_since")
-		redis.call("ZADD", KEYS[4], ARGV[1], id)
-		return redis.call("HGET", key, "msg")
-	end
+    local id = redis.call("ZPOPMIN", KEYS[1])
+    if id then
+        local key = ARGV[2] .. id[1]
+        redis.call("HSET", key, "state", "active")
+        redis.call("HDEL", key, "pending_since")
+        redis.call("ZADD", KEYS[4], ARGV[1], id[1])
+        return redis.call("HGET", key, "msg")
+    end
 end
 return nil`)
 
@@ -474,16 +480,21 @@ func (r *RDB) MarkAsComplete(ctx context.Context, msg *base.TaskMessage) error {
 // KEYS[3] -> asynq:{<qname>}:pending
 // KEYS[4] -> asynq:{<qname>}:t:<task_id>
 // ARGV[1] -> task ID
-// Note: Use RPUSH to push to the head of the queue.
+// Note: Use ZADD to add to the priority queue.
 var requeueCmd = redis.NewScript(`
 if redis.call("LREM", KEYS[1], 0, ARGV[1]) == 0 then
   return redis.error_reply("NOT FOUND")
 end
+
 if redis.call("ZREM", KEYS[2], ARGV[1]) == 0 then
   return redis.error_reply("NOT FOUND")
 end
-redis.call("RPUSH", KEYS[3], ARGV[1])
+
+local priority = redis.call("HGET", KEYS[4], "priority")
+
+redis.call("ZADD", KEYS[3], ARGV[2], priority)
 redis.call("HSET", KEYS[4], "state", "pending")
+
 return redis.status_reply("OK")`)
 
 // Requeue moves the task from active queue to the specified queue.
@@ -927,17 +938,18 @@ for _, id in ipairs(ids) do
 	local taskKey = ARGV[2] .. id
 	local group = redis.call("HGET", taskKey, "group")
 	if group and group ~= '' then
-	    redis.call("ZADD", ARGV[4] .. group, ARGV[1], id)
+		redis.call("ZADD", ARGV[4] .. group, ARGV[1], id)
 		redis.call("ZREM", KEYS[1], id)
 		redis.call("HSET", taskKey,
-				   "state", "aggregating")
-	else
-		redis.call("LPUSH", KEYS[2], id)
-		redis.call("ZREM", KEYS[1], id)
-		redis.call("HSET", taskKey,
-				   "state", "pending",
-				   "pending_since", ARGV[3])
-	end
+                   "state", "aggregating")
+    else
+		local priority = redis.call("HGET", taskKey, "priority")
+        redis.call("ZADD", KEYS[2], prirority, id)
+        redis.call("ZREM", KEYS[1], id)
+        redis.call("HSET", taskKey,
+                   "state", "pending",
+                   "pending_since", ARGV[3])
+    end
 end
 return table.getn(ids)`)
 
