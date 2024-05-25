@@ -226,6 +226,7 @@ var dequeueCmd = redis.NewScript(`
 if redis.call("EXISTS", KEYS[2]) == 0 then
     local ids = redis.call("ZPOPMIN", KEYS[1])
 	for _, id in ipairs(ids) do
+		redis.call("LPUSH", KEYS[3], id)
         local key = ARGV[2] .. id
         redis.call("HSET", key, "state", "active")
         redis.call("HDEL", key, "pending_since")
