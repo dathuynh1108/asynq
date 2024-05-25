@@ -945,7 +945,7 @@ for _, id in ipairs(ids) do
                    "state", "aggregating")
     else
 		local priority = redis.call("HGET", taskKey, "priority")
-        redis.call("ZADD", KEYS[2], prirority, id)
+        redis.call("ZADD", KEYS[2], priority, id)
         redis.call("ZREM", KEYS[1], id)
         redis.call("HSET", taskKey,
                    "state", "pending",
