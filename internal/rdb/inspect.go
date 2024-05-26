@@ -654,7 +654,7 @@ func (r *RDB) ListActive(qname string, pgn Pagination) ([]*base.TaskInfo, error)
 // ARGV[2] -> stop offset
 // ARGV[3] -> task key prefix
 var listMessagesCmd = redis.NewScript(`
-local ids = redis.call("LRange", KEYS[1], ARGV[1], ARGV[2])
+local ids = redis.call("ZRANGE", KEYS[1], ARGV[1], ARGV[2])
 local data = {}
 for _, id in ipairs(ids) do
 	local key = ARGV[3] .. id
