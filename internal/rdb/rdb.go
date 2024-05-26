@@ -493,7 +493,7 @@ end
 
 local priority = redis.call("HGET", KEYS[4], "priority")
 
-redis.call("ZADD", KEYS[3], ARGV[2], priority)
+redis.call("ZADD", KEYS[3], priority, ARGV[1])
 redis.call("HSET", KEYS[4], "state", "pending")
 
 return redis.status_reply("OK")`)

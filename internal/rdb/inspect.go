@@ -94,7 +94,7 @@ type DailyStats struct {
 // ARGV[2] -> group key prefix
 var currentStatsCmd = redis.NewScript(`
 local res = {}
-local pendingTaskCount = redis.call("LLEN", KEYS[1])
+local pendingTaskCount = redis.call("ZCOUNT", KEYS[1], -inf, +inf)
 table.insert(res, KEYS[1])
 table.insert(res, pendingTaskCount)
 table.insert(res, KEYS[2])
@@ -120,7 +120,7 @@ table.insert(res, KEYS[11])
 table.insert(res, redis.call("EXISTS", KEYS[11]))
 table.insert(res, "oldest_pending_since")
 if pendingTaskCount > 0 then
-	local id = redis.call("LRANGE", KEYS[1], -1, -1)[1]
+	local id = redis.call("ZRANGE", KEYS[1], -1, -1)[1]
 	table.insert(res, redis.call("HGET", ARGV[1] .. id, "pending_since"))
 else
 	table.insert(res, 0)
@@ -937,7 +937,8 @@ func (r *RDB) RunAllArchivedTasks(qname string) (int64, error) {
 var runAllAggregatingCmd = redis.NewScript(`
 local ids = redis.call("ZRANGE", KEYS[1], 0, -1)
 for _, id in ipairs(ids) do
-	redis.call("LPUSH", KEYS[2], id)
+	local priority = redis.call("HGET", ARGV[1] .. id, "priority")
+	redis.call("ZADD", KEYS[2], priority, id)
 	redis.call("HSET", ARGV[1] .. id, "state", "pending")
 end
 redis.call("DEL", KEYS[1])
@@ -1014,7 +1015,8 @@ else
 		return redis.error_reply("internal error: task id not found in zset " .. tostring(ARGV[2] .. state))
 	end
 end
-redis.call("LPUSH", KEYS[2], ARGV[1])
+local priority = redis.call("HGET", KEYS[1], "priority")
+redis.call("ZADD", KEYS[2], priority, ARGV[1])
 redis.call("HSET", KEYS[1], "state", "pending")
 return 1
 `)
@@ -1076,7 +1078,8 @@ func (r *RDB) RunTask(qname, id string) error {
 var runAllCmd = redis.NewScript(`
 local ids = redis.call("ZRANGE", KEYS[1], 0, -1)
 for _, id in ipairs(ids) do
-	redis.call("LPUSH", KEYS[2], id)
+	local priority = redis.call("HGET", ARGV[1] .. id, "priority")
+	redis.call("ZADD", KEYS[2], priority, id)
 	redis.call("HSET", ARGV[1] .. id, "state", "pending")
 end
 redis.call("DEL", KEYS[1])
