@@ -1,3 +1,5 @@
+# Priority Queue version of Asynq
+
 <img src="https://user-images.githubusercontent.com/11155743/114697792-ffbfa580-9d26-11eb-8e5b-33bef69476dc.png" alt="Asynq logo" width="360px" />
 
 # Simple, reliable & efficient distributed task queue in Go
