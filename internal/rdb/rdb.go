@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/dathuynh1108/asynq/internal/base"
@@ -26,8 +27,9 @@ const LeaseDuration = 30 * time.Second
 
 // RDB is a client interface to query and mutate task queues.
 type RDB struct {
-	client redis.UniversalClient
-	clock  timeutil.Clock
+	client          redis.UniversalClient
+	clock           timeutil.Clock
+	queuesPublished sync.Map
 }
 
 // NewRDB returns a new instance of RDB.
@@ -114,8 +116,11 @@ func (r *RDB) Enqueue(ctx context.Context, msg *base.TaskMessage) error {
 	if err != nil {
 		return errors.E(op, errors.Unknown, fmt.Sprintf("cannot encode message: %v", err))
 	}
-	if err := r.client.SAdd(ctx, base.AllQueues, msg.Queue).Err(); err != nil {
-		return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "sadd", Err: err})
+	if _, found := r.queuesPublished.Load(msg.Queue); !found {
+		if err := r.client.SAdd(ctx, base.AllQueues, msg.Queue).Err(); err != nil {
+			return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "sadd", Err: err})
+		}
+		r.queuesPublished.Store(msg.Queue, true)
 	}
 	keys := []string{
 		base.TaskKey(msg.Queue, msg.ID),
@@ -179,8 +184,11 @@ func (r *RDB) EnqueueUnique(ctx context.Context, msg *base.TaskMessage, ttl time
 	if err != nil {
 		return errors.E(op, errors.Internal, "cannot encode task message: %v", err)
 	}
-	if err := r.client.SAdd(ctx, base.AllQueues, msg.Queue).Err(); err != nil {
-		return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "sadd", Err: err})
+	if _, found := r.queuesPublished.Load(msg.Queue); !found {
+		if err := r.client.SAdd(ctx, base.AllQueues, msg.Queue).Err(); err != nil {
+			return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "sadd", Err: err})
+		}
+		r.queuesPublished.Store(msg.Queue, true)
 	}
 	keys := []string{
 		msg.UniqueKey,
@@ -541,8 +549,11 @@ func (r *RDB) AddToGroup(ctx context.Context, msg *base.TaskMessage, groupKey st
 	if err != nil {
 		return errors.E(op, errors.Unknown, fmt.Sprintf("cannot encode message: %v", err))
 	}
-	if err := r.client.SAdd(ctx, base.AllQueues, msg.Queue).Err(); err != nil {
-		return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "sadd", Err: err})
+	if _, found := r.queuesPublished.Load(msg.Queue); !found {
+		if err := r.client.SAdd(ctx, base.AllQueues, msg.Queue).Err(); err != nil {
+			return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "sadd", Err: err})
+		}
+		r.queuesPublished.Store(msg.Queue, true)
 	}
 	keys := []string{
 		base.TaskKey(msg.Queue, msg.ID),
@@ -603,8 +614,11 @@ func (r *RDB) AddToGroupUnique(ctx context.Context, msg *base.TaskMessage, group
 	if err != nil {
 		return errors.E(op, errors.Unknown, fmt.Sprintf("cannot encode message: %v", err))
 	}
-	if err := r.client.SAdd(ctx, base.AllQueues, msg.Queue).Err(); err != nil {
-		return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "sadd", Err: err})
+	if _, found := r.queuesPublished.Load(msg.Queue); !found {
+		if err := r.client.SAdd(ctx, base.AllQueues, msg.Queue).Err(); err != nil {
+			return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "sadd", Err: err})
+		}
+		r.queuesPublished.Store(msg.Queue, true)
 	}
 	keys := []string{
 		base.TaskKey(msg.Queue, msg.ID),
@@ -660,8 +674,11 @@ func (r *RDB) Schedule(ctx context.Context, msg *base.TaskMessage, processAt tim
 	if err != nil {
 		return errors.E(op, errors.Unknown, fmt.Sprintf("cannot encode message: %v", err))
 	}
-	if err := r.client.SAdd(ctx, base.AllQueues, msg.Queue).Err(); err != nil {
-		return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "sadd", Err: err})
+	if _, found := r.queuesPublished.Load(msg.Queue); !found {
+		if err := r.client.SAdd(ctx, base.AllQueues, msg.Queue).Err(); err != nil {
+			return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "sadd", Err: err})
+		}
+		r.queuesPublished.Store(msg.Queue, true)
 	}
 	keys := []string{
 		base.TaskKey(msg.Queue, msg.ID),
@@ -719,8 +736,11 @@ func (r *RDB) ScheduleUnique(ctx context.Context, msg *base.TaskMessage, process
 	if err != nil {
 		return errors.E(op, errors.Internal, fmt.Sprintf("cannot encode task message: %v", err))
 	}
-	if err := r.client.SAdd(ctx, base.AllQueues, msg.Queue).Err(); err != nil {
-		return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "sadd", Err: err})
+	if _, found := r.queuesPublished.Load(msg.Queue); !found {
+		if err := r.client.SAdd(ctx, base.AllQueues, msg.Queue).Err(); err != nil {
+			return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "sadd", Err: err})
+		}
+		r.queuesPublished.Store(msg.Queue, true)
 	}
 	keys := []string{
 		msg.UniqueKey,
@@ -841,6 +861,7 @@ const (
 // KEYS[6] -> asynq:{<qname>}:failed:<yyyy-mm-dd>
 // KEYS[7] -> asynq:{<qname>}:processed
 // KEYS[8] -> asynq:{<qname>}:failed
+// KEYS[9] -> asynq:{<qname>}:t:
 // -------
 // ARGV[1] -> task ID
 // ARGV[2] -> updated base.TaskMessage value
@@ -857,8 +878,22 @@ if redis.call("ZREM", KEYS[3], ARGV[1]) == 0 then
   return redis.error_reply("NOT FOUND")
 end
 redis.call("ZADD", KEYS[4], ARGV[3], ARGV[1])
-redis.call("ZREMRANGEBYSCORE", KEYS[4], "-inf", ARGV[4])
-redis.call("ZREMRANGEBYRANK", KEYS[4], 0, -ARGV[5])
+local old = redis.call("ZRANGE", KEYS[4], "-inf", ARGV[4], "BYSCORE")
+if #old > 0 then
+	for _, id in ipairs(old) do
+		redis.call("DEL", KEYS[9] .. id)
+	end
+	redis.call("ZREM", KEYS[4], unpack(old))
+end
+
+local extra = redis.call("ZRANGE", KEYS[4], 0, -ARGV[5])
+if #extra > 0 then
+	for _, id in ipairs(extra) do
+		redis.call("DEL", KEYS[9] .. id)
+	end
+	redis.call("ZREM", KEYS[4], unpack(extra))
+end
+
 redis.call("HSET", KEYS[1], "msg", ARGV[2], "state", "archived")
 local n = redis.call("INCR", KEYS[5])
 if tonumber(n) == 1 then
@@ -901,6 +936,7 @@ func (r *RDB) Archive(ctx context.Context, msg *base.TaskMessage, errMsg string)
 		base.FailedKey(msg.Queue, now),
 		base.ProcessedTotalKey(msg.Queue),
 		base.FailedTotalKey(msg.Queue),
+		base.TaskKeyPrefix(msg.Queue),
 	}
 	argv := []interface{}{
 		msg.ID,
@@ -1414,7 +1450,7 @@ func (r *RDB) ClearServerState(host string, pid int, serverID string) error {
 
 // KEYS[1]  -> asynq:schedulers:{<schedulerID>}
 // ARGV[1]  -> TTL in seconds
-// ARGV[2:] -> schedler entries
+// ARGV[2:] -> scheduler entries
 var writeSchedulerEntriesCmd = redis.NewScript(`
 redis.call("DEL", KEYS[1])
 for i = 2, #ARGV do
@@ -1445,10 +1481,10 @@ func (r *RDB) WriteSchedulerEntries(schedulerID string, entries []*base.Schedule
 }
 
 // ClearSchedulerEntries deletes scheduler entries data from redis.
-func (r *RDB) ClearSchedulerEntries(scheduelrID string) error {
+func (r *RDB) ClearSchedulerEntries(schedulerID string) error {
 	var op errors.Op = "rdb.ClearSchedulerEntries"
 	ctx := context.Background()
-	key := base.SchedulerEntriesKey(scheduelrID)
+	key := base.SchedulerEntriesKey(schedulerID)
 	if err := r.client.ZRem(ctx, base.AllSchedulers, key).Err(); err != nil {
 		return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "zrem", Err: err})
 	}
